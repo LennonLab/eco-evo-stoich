@@ -22,6 +22,8 @@ This repository contains open-source code, data, and text files for the eco-evo-
 
 `20150710-infmatrixNcoevo`, `20150710-infmatrixPcoevo`, `20150710-infmatrixNcontrols`, `20150710-infmatrixPcontrols`: Calculated coevolutionary dynamics between coevolving and noncoevolving strains within the chemostats. Values represent the proportion of successful infections between time group isolates within treatment and control chemostats. These data were used for the production of Figure 2.
 
+`biwebstats` summarized results from the BiWeb analysis including the number of rows in the matrix (nrow), number of columns in the matrix (ncol), the number of interactions (n.intxn), connectance, modularity metrics (.qb and .qr), and nestedness metrics (nodf and ntc), for each chemostat replicate (cID) between the two nutrient treatments (lim: N = N-limited, P = P-limited). These data were used for the production of Figure 5. 
+
 ***Supplemental**
 
 `PercChange`: Percent change in growth rates from triplicate cultures using the nutrient limited media (med.base: NL = N-limited, PL = P-limited) from the chemostat experiment with additional N (+N) or P (+P).  This data corresponds to Figure S1.
