@@ -1,0 +1,818 @@
+---
+title: Population Dynamics
+author:
+- M. Larsen^[Indiana University, Bloomington, IN]
+abstract:
+output: 
+  pdf_document:
+    fig_caption: yes
+    keep_tex: no
+    latex_engine: xelatex
+    number_sections: no
+geometry: margin=1in
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE}
+rm(list=ls())
+
+# Load packages and dependencies
+#require(aggregate)
+library(reshape); library(nlme); library(vegan)
+library(igraph); library(bipartite)
+library(plotrix);library(pander)
+library(ggplot2); library(gridExtra)
+library(nlme)
+library(synchrony); library(astsa)
+library(tidyverse)
+library(lemon)
+library(pastecs)
+library(tseries)
+
+# load dependencies
+source("./bin/microscope.counts.R")
+```
+
+```{r global-opts, include = FALSE}
+#knitr options
+knitr::opts_chunk$set(fig.width=6.5, fig.height=3,
+                      echo=FALSE, warning=FALSE, message=FALSE)
+#ggplot options
+theme_std <- function (base_size = 10, base_family = "") {
+  theme_grey(base_size = base_size, base_family = base_family) %+replace% 
+    theme(axis.ticks = element_line(colour = "black", size = 0.5), 
+          legend.key = element_rect(colour = NA), 
+          legend.background = element_rect(fill =NA, colour = NA),
+          panel.background = element_rect(fill = "white", colour = NA), 
+          panel.border = element_rect(colour = "black", fill=NA, size = 1),
+          axis.line = element_line(colour = "black", size = 1),
+          panel.grid.major = element_line(NA), 
+          panel.grid.minor = element_line(NA), 
+          axis.text  = element_text(size=rel(0.9), colour = "grey40"),
+          #          axis.title  = element_text(size=rel(1.0)),
+          axis.title.x = element_text(margin = unit(c(3, 0, 0, 0), "mm"),
+                                      size=rel(1.25), colour = "grey30"),
+          axis.title.y = element_text(margin = unit(c(0, 3, 0, 0), "mm"),
+                                      size=rel(1.25), angle = 90, colour= "grey30"),
+          strip.text = element_text(size = rel(1.25), colour = "black", face = "bold"), #face = "normal"
+          strip.background = element_blank(),
+          plot.margin=unit(c(10,10,10,10),"pt"), 
+          panel.spacing = unit(25,"pt")
+    )
+}
+```
+
+<Data Reduction>
+
+```{r, results = 'hide'}
+# Reduce raw microscope field counts (ts-counts_raw) using the function bin\microscope.counts to create average cyanobacteria and phage counts per sampling date for each chemostat in the experiment
+# microscope.counts("./data/ts-counts_raw.csv",  "ts-counts")
+# Read in the processed data
+ts.counts <- read.csv(file="./data/ts-counts.csv",  header = F)
+```
+
+```{r cid-cals}
+# Creates long form data file for time series
+#remove header row
+cstat <- ts.counts[2:nrow(ts.counts),]
+#remove factors from data set
+cstat[,1] <- factor(cstat[,1])
+cstat[,2] <- factor(cstat[,2])
+cstat[,3] <- factor(cstat[,3])
+cstat[,4] <- factor(cstat[,4])
+cstat[,5] <- factor(cstat[,5])
+#assign ids and day
+cstat.ids <- ts.counts[1,1:5]
+day <- as.numeric(ts.counts[1,6:ncol(ts.counts)])
+#Generate information for each chemostat into long form
+cID <- unique(cstat[,2])
+abd.list <- c(); day.list <- c(); cID.list <- c(); type.list <- c()
+lim.list <- c(); virus.list <- c()
+for(i in 1:length(cID)){
+  org <- unique(cstat[cstat[,2] == cID[i],1])
+  
+  for(j in 1:length(org)){
+    ids <- cstat[(cstat[,2] == cID[i] & cstat[,1] == org[j]),1:5]
+    tmp <- as.numeric(cstat[(cstat[,2] == cID[i] & cstat[,1] == org[j]),6:ncol(cstat)])
+    tmpday <- day
+    
+    abd.list <- append(abd.list,tmp)
+    day.list <- append(day.list,tmpday)
+    lim.list <- append(lim.list,rep(as.character(ids[1,5]),length(tmpday)))
+    virus.list <- append(virus.list,rep(as.character(ids[1,4]),length(tmpday)))
+    cID.list <- append(cID.list,rep(as.character(cID[i]),length(day)))
+    type.list <- append(type.list,rep(as.character(org[j]),length(day)))
+  }
+}
+#merge data and change column names
+cstat.abd <- data.frame(day.list,type.list,lim.list,virus.list,cID.list,abd.list)
+colnames(cstat.abd) <- c("day","microbe","lim","type","cID","abd")
+#write.csv(cstat.abd, file = "./cid-means.csv", row.names = F)
+```
+
+
+```{r trt-cals}
+#reshape data file from long form to columns for syn, phage, and p:s ratio
+cstat.abd <- read.csv("./data/cid-means.csv", header = T)
+cstat.reshape <- cstat.abd
+day.num <- day
+cstat.reshape$day <- as.factor(cstat.reshape$day)
+m1 <- melt(cstat.reshape, id = c("day","microbe","lim","type", "cID"))
+c1 <- cast(m1, day +lim + type + cID ~ microbe)
+
+#sort data and calculate p:s ratio at same time point
+cstat.reshape <- c1[order(c1$type, c1$cID, c1$day),]
+cstat.reshape$pst1 <- round(cstat.reshape[,5]/cstat.reshape[,6], digits = 2)
+cstat.reshape$day.num <- rep(day.num,10)
+
+#remove control data and truncate syn/phage data between days 0 and 166
+cstat.infect <- subset(cstat.reshape,cstat.reshape$type == "Infect")
+cstat.infect <- cstat.infect[,-3]
+cstat.truc <- subset(cstat.infect,cstat.infect$day.num > 0, na.rm = T)
+
+#write.csv(cstat.truc, file = "./output/cstatabd-stats.csv", row.names = F)
+
+#Create mean and sem data calculations
+sem <- function(x){
+  sd(x)/sqrt(3)
+}
+c2 <- cast(m1, day + lim + type ~ microbe, mean)
+cstat.means <- c2[order(c2$lim, c2$type, c2$day),]
+m2 <- melt(cstat.means, id = c("day", "lim", "type"))
+c3 <- cast(m2, day + lim ~ microbe + type)
+cstat.means <- c3[order(c3$lim, c3$day),]
+c4 <- cast(m1, day + lim + type ~ microbe, sem)
+m3 <- melt(c4, id = c("day", "lim", "type"))
+c5 <- cast(m3, day + lim ~ microbe + type)
+cstat.sem <- c5[order(c5$lim, c5$day),]
+avg.data <- merge(cstat.means,cstat.sem, c("day","lim"))
+avg.data <- avg.data[order(avg.data$lim,avg.data$day),]
+avg.data <- cbind(rep(day,2),avg.data[,2:ncol(avg.data)])
+colnames(avg.data) <- c("day","lim",
+                        "PmeanC","PmeanI","SmeanC","SmeanI",
+                        "PseC","PseI","SseC","SseI")
+#write.csv(avg.data, file = "./data/cstat-means.csv", row.names = F)
+```
+
+## Figure 1: Average population dynamics
+
+```{r avgpops-revised,results = 'hide', echo=FALSE, fig.asp='75%'}
+avg <- read.csv("./data/cstat-means.csv", header = T)
+day.start <- -6
+day.end <- 170
+
+# Used for saving pub quality figures
+# tiff(filename = "./supporting-files/Figure1_AvgPopDynamics.tiff",
+#     width = 1140, height = 570, units = "px", pointsize = 13,
+#     bg = "white", res = 100)
+
+par(mfrow = c(1,2))
+par(mar = c(4,6,3,0)+0.1)
+plot(avg$day[avg$day >= day.start],avg$NmeanSI[avg$day >= day.start],
+     xlim = c(day.start,day.end), ylim = c(1*10^5,10^9),
+     main = "N-limited",
+     log = "y", xaxt = 'n',yaxt = 'n',
+     xlab = expression(bold("Time (d)")), 
+     ylab = expression(bold(paste("Abundance (mL"^"-1",")"))),
+     cex.lab = 1.5, font.lab = 2,cex.main = 1.5,
+     lty = 1, lwd = 2, type = "o", col = "black", bg = "white", 
+     pch = 21, cex = 1)
+if(day.start <= 0){
+  abline(v = 0, lwd = 2, lty = 1, col = "black")
+  rect(day.start-12,1*10^3,0,10^10, col = "grey94")
+}
+if(day.start > -6){
+  text(-60,10^5,labels = "Acclimation", font = 2, cex = 1.15)
+  text(80,10^5,labels = "Phage addition", font = 2, cex = 1.15)
+}
+
+axis(1, cex.axis = 1.15,c(-120,-80,-40,0,40,80,120,160))
+ticks <- seq(5, 9, by=1)
+labels <- sapply(ticks, function(i) as.expression(bquote(10^ .(i))))
+axis(2, cex.axis = 1.15, at = c(10^5, 10^6, 10^7, 10^8, 10^9), labels = labels, las = 1)
+#abline(v = 0, col = "grey", lty = 2, lwd = 2)
+box(lwd=3)
+
+arrows(avg$day[avg$day >= day.start],
+       avg$NmeanSI[avg$day >= day.start]-avg$NseSI[avg$day >= day.start],
+       avg$day[avg$day >= day.start],
+       avg$NmeanSI[avg$day >= day.start]+avg$NseSI[avg$day >= day.start],
+       code=0,lwd=2.25)
+arrows(avg$day,avg$NmeanP-avg$NseP,avg$day,avg$NmeanP+avg$NseP,code=0,lwd=2.25)
+
+points(avg$day[avg$day >= day.start],avg$NmeanSI[avg$day >= day.start],
+       pch = 21, col = "black",bg = "white",
+       type = 'o',lwd = 2,cex = 1.25, lty = 1)
+points(avg$day,avg$NmeanP,
+       pch = 22, col = "black",bg = "white",
+       type = 'l',lwd = 2,cex = 1.25 , lty = 1)
+points(avg$day,avg$NmeanP,
+       pch = 22, col = "grey50",bg = "black",
+       type = 'p',lwd = 1.25,cex = 1.25 , lty = 1)
+#text("a",cex=2.5,x=162,y=10^8.8)
+par(mar = c(4,4,3,2)+0.1)
+#PL
+plot(avg$day[avg$day >= day.start],avg$PmeanSI[avg$day >= day.start],
+     xlim = c(day.start,day.end),ylim = c(1*10^5,10^9), 
+     main = "P-limited",
+     log = "y", xaxt = 'n',yaxt = 'n',
+     xlab = expression(bold("Time (d)")), ylab = NA,cex.lab = 1.5, cex.main = 1.5,
+     lty = 1, lwd = 2, type = "o", col = "black", bg = "white", 
+     pch = 21, cex = 1, font.lab = 2)
+if(day.start <= 0){
+  abline(v = 0, lwd = 2, lty = 1, col = "black")
+  rect(day.start-12,1*10^3,0,10^10, col = "grey94")
+}
+if(day.start > -6){
+  text(-60,10^4,labels = "Acclimation", font = 2, cex = 1.2)
+  text(80,10^4,labels = "Phage addition", font = 2, cex = 1.2)
+}
+axis(1, cex.axis = 1.15,c(-120,-80,-40,0,40,80,120,160))
+ticks <- seq(4, 9, by=1)
+labels <- sapply(ticks, function(i) as.expression(bquote(10^ .(i))))
+axis(2, cex.axis = 1.15, at = c(10^4,10^5, 10^6, 10^7, 10^8, 10^9), labels = labels, las = 1, font = 2)
+box(lwd=3)
+
+arrows(avg$day[avg$day >= day.start],
+       avg$PmeanSI[avg$day >= day.start]-avg$PseSI[avg$day >= day.start],
+       avg$day[avg$day >= day.start],
+       avg$PmeanSI[avg$day >= day.start]+avg$PseSI[avg$day >= day.start],code=0,lwd=2.25)
+arrows(avg$day,avg$PmeanP-avg$PseP,avg$day,avg$PmeanP+avg$PseP,code=0,lwd=2.25)
+points(avg$day[avg$day >= day.start],avg$PmeanSI[avg$day >= day.start],
+       pch = 21, col = "black",bg = "white",
+       type = 'o',lwd = 2,cex = 1.25, lty = 1)
+points(avg$day,avg$PmeanP,
+       pch = 22, col = "black",bg = "black",
+       type = 'l',lwd = 2,cex = 1.25 , lty = 1)
+points(avg$day,avg$PmeanP,
+       pch = 22, col = "grey50",bg = "black",
+       type = 'p',lwd = 1.25,cex = 1.25 , lty = 1)
+#text("b",cex=2.5,x=162,y=10^8.8)
+legend("bottomright", c("phage","cyanobacteria"),
+       pch = c(22,21), col = "black", 
+       pt.bg = c("black","white"),pt.cex = 1.25, pt.lwd = 2,
+       text.font = c(1,1),
+       bty = 'n', cex = 1, lwd = 1)
+#dev.off()
+```
+
+## Figure S2: Average population dynamics
+
+```{r avgpops-ctrl_revised}
+#tiff(filename = "../../figures/FigS1-CtrlAvgPopDynamics.tiff",
+#     width = 1140, height = 570, units = "px", pointsize = 13,
+#     bg = "white", res = 100)
+par(mar = c(5,6,2,0)+0.1, mfrow = c(1,2))
+plot(avg$day[avg$day >= day.start],avg$NmeanC[avg$day >= day.start],
+     xlim = c(day.start,day.end),ylim = c(1*10^5,10^9), log = "y", xaxt = 'n',yaxt = 'n',
+     xlab = "Time (d)", ylab = expression(bold(paste("Abundance (mL"^"-1",")"))),
+     main = "N-limited",
+     cex.lab = 1.5, font.lab = 2, cex.main = 1.5,
+     lty = 1, lwd = 2, type = "o", col = "black", bg = "grey",
+     pch = 21, cex = 1)
+
+axis(1, cex.axis = 1.15,c(-120,-80,-40,0,40,80,120,160))
+ticks <- seq(4, 9, by = 1)
+labels <- sapply(ticks, function(i) as.expression(bquote(10^ .(i))))
+axis(2, cex.axis = 1.15, at = c(10^4,10^5, 10^6, 10^7, 10^8, 10^9), 
+     labels = labels, las = 1)
+
+if(day.start <= 0){
+  abline(v = 0, lwd = 2, lty = 1, col = "black")
+  rect(day.start-12,1*10^3,0,10^10, col = "grey94")
+}
+box(lwd=3)
+
+arrows(avg$day[avg$day >= day.start],
+       avg$NmeanC[avg$day >= day.start]-avg$NseC[avg$day >= day.start],
+       avg$day[avg$day >= day.start],
+       avg$NmeanC[avg$day >= day.start]+avg$NseC[avg$day >= day.start],code=0,lwd=1.5)
+points(avg$day[avg$day >= day.start],avg$NmeanC[avg$day >= day.start],
+       pch = 21, col = "black",bg = "grey",
+       type = 'o',lwd = 1.5,cex = 1.5, lty = 1)
+par(mar = c(5,4,2,2)+0.1)
+plot(avg$day[avg$day >= day.start],avg$PmeanC[avg$day >= day.start],
+     xlim = c(day.start,day.end),ylim = c(1*10^5,10^9), log = "y", xaxt = 'n',yaxt = 'n',
+     xlab = "Time (d)", ylab = NA, 
+     main = "P-limited",
+     cex.main = 1.5, cex.lab = 1.5, 
+     lty = 1, lwd = 2, type = "o", col = "black", bg = "grey", 
+     pch = 21, cex = 1, font.lab = 2)
+
+axis(1, cex.axis = 1.15,c(-120,-80,-40,0,40,80,120,160))
+ticks <- seq(4, 9, by=1)
+labels <- sapply(ticks, function(i) as.expression(bquote(10^ .(i))))
+axis(2, cex.axis = 1.15, at = c(10^4,10^5, 10^6, 10^7, 10^8, 10^9), 
+     labels = labels, las = 1, font = 2)
+if(day.start <= 0){
+  abline(v = 0, lwd = 2, lty = 1, col = "black")
+  rect(day.start-12,1*10^3,0,10^10, col = "grey94")
+}
+box(lwd=3)
+
+arrows(avg$day[avg$day >= day.start],
+       avg$PmeanC[avg$day >= day.start]-avg$PseC[avg$day >= day.start],
+       avg$day[avg$day >= day.start],
+       avg$PmeanC[avg$day >= day.start]+avg$PseC[avg$day >= day.start],code=0,lwd=1.5)
+points(avg$day[avg$day >= day.start],avg$PmeanC[avg$day >= day.start],
+       pch = 21, col = "black",bg = "grey",
+       type = 'o',lwd = 1.5,cex = 1.5, lty = 1)
+#text("b",cex=2.5,x=162,y=10^8.8)
+#dev.off()
+```
+
+\newpage
+
+## Figure 1: Average population dynamics - revised
+
+```{r cstatSummaryCalcs}
+sem <- function(x){
+  sd(x)/sqrt(3)
+}
+
+ts.counts.mod <- ts.counts
+colnames(ts.counts.mod) <- c("microbe","cID","rep","trt","lim",ts.counts[1,6:ncol(ts.counts)])
+
+ts.counts.mod <- ts.counts.mod[-1,]
+
+ts.counts.sum <- ts.counts.mod %>%
+  gather(day, abundance, "-125":"166") %>%
+  mutate(day = as.numeric(day), 
+         trt.lim = paste(trt,".",lim, sep =""),
+         microbe.cID = paste(microbe,".",cID, sep ="")) %>%
+  group_by(day, trt, lim, microbe) %>%
+  summarise(mean = mean(abundance, na.rm = T), sem = sem(abundance), 
+            min = min(abundance), max = max(abundance))
+```
+
+```{r treatmentdynamics-figure}
+#droplevels(ts.counts.sum$lim)
+#levels(ts.counts.sum$lim) <- c("","N-limited","P-limited")
+
+# generate plot
+p <- ggplot(data = ts.counts.sum %>% 
+              filter(trt == "Infect", day >= -6), 
+            aes(x = day, y = mean, ymin = mean-sem, ymax = mean+sem,
+                shape = microbe, col = microbe)) +
+  geom_vline(xintercept = 0, size = 0.25) +
+  geom_errorbar(col = "black", width = 0)+
+  geom_line(col = "black") + geom_point() + facet_grid(~lim) +
+  scale_shape_manual(values = c(15,19), name = "") + 
+  geom_point(data = ts.counts.sum %>% 
+               filter(trt == "Infect", microbe =="Syn", day >= -6), 
+             aes(x = day, y = mean), size = 2, col= "black") +
+  geom_point(data = ts.counts.sum %>% 
+               filter(trt == "Infect", microbe =="Syn", day >= -6), 
+             aes(x = day, y = mean), size = 1.5, col= "white") +
+  scale_color_manual(values = c("black","white"), name = "")+
+  scale_y_log10(breaks = scales::trans_breaks("log10", function(x) 10^x),
+                labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  labs(x = "Time (d)", y = expression(Abundance~(mL^-1))) + 
+  theme_std() +
+  annotation_logticks(sides = "lr")
+
+# move legend
+reposition_legend(p, panel = "panel-2-1",'bottom right')
+
+# save plot
+#ggsave(plot = reposition_legend(p, panel = "panel-2-1",'bottom right'), filename = "../../figures/Fig1_AvgPopDynamics_revised.tiff", units = "in", height = 3, width = 5.75, dpi = 300, scale = 1.5, device = "tiff")
+```
+
+## Figure S2: Average population dynamics - revised
+
+```{r controldynamics-figure}
+p <- ggplot(data = ts.counts.sum %>% 
+              filter(trt == "Control", day >= -6), 
+            aes(x = day, y = mean, ymin = min, ymax = max)) +
+  geom_vline(xintercept = 0, size = 0.25) +
+  geom_errorbar(col = "black", width = 0)+
+  geom_line(col = "grey70") + geom_point() + facet_grid(~lim) +
+  #scale_shape_manual(values = c(15,19)) + 
+  scale_color_manual(values = c("black","white"))+
+  scale_y_log10(breaks = scales::trans_breaks("log10", function(x) 10^x),
+                labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  labs(x = "Time (d)", y = expression(Abundance~(mL^-1))) + 
+  theme_std() +
+  annotation_logticks(sides = "lr")
+
+print(p)
+
+# ggsave(plot = p, filename = "./supporting-files/FigureS2_AvgPopDynamics_revised.tiff", units = "in", height = 3, width = 5.75, dpi = 300, scale = 1.2, device = "tiff")
+```
+
+\newpage
+
+<CCF analysis>
+```{r Nlim_CCF, eval = F}
+# convert irregular time series to regular time series
+
+ts.counts.sum2 <- as.data.frame(ts.counts.sum)
+ccf.dataset.N.log <- ts.counts.sum2 %>%
+  filter(day > 0, day<= 149, trt == "Infect", lim == "N-limited") %>%
+  select(microbe, day, mean) %>%
+  ungroup() %>%
+  mutate(mean = log10(mean)) %>%
+  spread(microbe, mean)
+length(ccf.dataset.N.log$day)
+intervals.N <- ccf.dataset.N.log$day[2:59] - ccf.dataset.N.log$day[1:58]
+range(intervals.N); mean(intervals.N)
+
+# range is variable - need to be regulated to be converted to ts
+ts.n.reg <- regul(ccf.dataset.N.log$day, ccf.dataset.N.log[2:3], xmin = 2, deltat = 2,
+                  methods = c("l","l"), n = 74)
+#tiff(filename = "../../figures/SRegTS_N.tiff", units = "in", width = 7.5, height = 4, res = 300)
+par(mfrow = c(1,2))
+n.syn <- plot(ts.n.reg,2)
+n.phage <- plot(ts.n.reg,1)
+#dev.off()
+specs(ts.n.reg)
+syn.n.ts <- extract(ts.n.reg, series = "Syn")
+phage.n.ts <- extract(ts.n.reg, series = "Phage")
+
+adf.test(syn.n.ts)
+diff.syn.n.ts <- diff(syn.n.ts)
+adf.test(diff.syn.n.ts)
+adf.test(phage.n.ts)
+diff.phage.n.ts <- diff(phage.n.ts)
+adf.test(diff.phage.n.ts)
+#ccf.n <- ccf(syn.n.ts,phage.n.ts, type = "correlation")
+ccf.n <- ccf(diff.syn.n.ts,diff.phage.n.ts, type = "correlation", main ="N-limited", lag.max = 5)
+alldata=ts.intersect(diff.syn.n.ts,synlag2=stats::lag(diff.syn.n.ts,2), 
+                     diff.syn.n.ts,synlag4=stats::lag(diff.syn.n.ts,4),
+                     diff.syn.n.ts,synlag6=stats::lag(diff.syn.n.ts,6))
+str(alldata) #ts from 4 to 136
+alldata <- as.data.frame(alldata)
+tryit = lm(diff.phage.n.ts[2:68]~synlag2+synlag4 +synlag6, data = alldata)
+summary (tryit)
+acf2(residuals(tryit))
+```
+
+```{r Plim_CCF, eval = F}
+# convert irregular time series to regular time series
+ccf.dataset.P.log <- ts.counts.sum2 %>%
+  filter(day > 0, day<= 149, trt == "Infect", lim == "P-limited") %>%
+  select(microbe, day, mean) %>%
+  ungroup() %>%
+  mutate(mean = log10(mean)) %>%
+  spread(microbe, mean)
+length(ccf.dataset.P.log$day)
+intervals.P <- ccf.dataset.P.log$day[2:59] - ccf.dataset.P.log$day[1:58]
+range(intervals.P); mean(intervals.P)
+# range is variable - need to be regulated to be converted to ts
+ts.p.reg <- regul(ccf.dataset.P.log$day, ccf.dataset.P.log[2:3], xmin = 2, deltat = 2,
+                  methods = c("l","l"), n = 74)
+tiff(filename = "../../figures/SRegTS_P.tiff", units = "in", width = 7.5, height = 4, res = 300)
+par(mfrow = c(1,2))
+p.syn <- plot(ts.p.reg,2)
+p.phage <- plot(ts.p.reg,1)
+dev.off()
+specs(ts.p.reg)
+syn.p.ts <- extract(ts.p.reg, series = "Syn")
+phage.p.ts <- extract(ts.p.reg, series = "Phage")
+adf.test(syn.p.ts)
+diff.syn.p.ts <- diff(syn.p.ts)
+adf.test(diff.syn.p.ts)
+adf.test(phage.p.ts)
+diff.phage.p.ts <- diff(phage.p.ts)
+adf.test(diff.phage.p.ts)
+#ccf.n <- ccf(syn.n.ts,phage.n.ts, type = "correlation")
+ccf.p <- ccf(diff.syn.p.ts,diff.phage.p.ts, type = "correlation", main ="P-limited", lag.max = 5)
+```
+
+```{r CCF_plot, eval = F}
+tiff(filename = "../../figures/S_ccf.tiff", units = "in", width = 7.5, height = 3.5, res = 300)
+par(mfrow = c(1,2))
+ccf2(diff.syn.n.ts,diff.phage.n.ts, main ="N-limited", max.lag = 5)
+ccf2(diff.syn.p.ts,diff.phage.p.ts, main ="P-limited", max.lag = 5)
+dev.off()
+```
+
+
+\newpage
+
+## Calculations and Statistics
+### Reapeated Measures ANOVA (RMANOVA)
+
+```{r EDA-plot}
+p <- ggplot(data = ts.counts.sum %>% 
+              filter(microbe == "Syn", day >= -6), 
+            aes(x = day, y = mean, ymin = min, ymax = max, 
+                col = trt, shape = trt)) +
+  geom_vline(xintercept = 0, size = 0.25) +
+  geom_errorbar(col = "grey70", width = 0)+
+  geom_line(col = "grey25") + geom_point() + facet_grid(~lim) +
+  #scale_shape_manual(values = c(15,19)) + 
+  scale_color_manual(values = c("black","grey"))+
+  scale_y_log10(breaks = scales::trans_breaks("log10", function(x) 10^x),
+                labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  labs(x = "Time (d)", y = expression(Abundance~(mL^-1))) + 
+  theme_std() +
+  annotation_logticks(sides = "lr")
+
+print(p)
+```
+
+```{r NvP-phage, echo=FALSE}
+# this is a mixed equation model where day and treatment are fixed factors, 
+# while cID is a random factor
+ts.abd <- subset(cstat.abd,cstat.abd$type == "Infect" & cstat.abd$day > 0)
+ts.abd <- na.omit(ts.abd)
+ts.abd$log.abd <- log10(ts.abd$abd)                   #Create a column of log data
+ts.abd$day.fac <- as.factor(ts.abd$day)               #Convert time into a factor
+phage <- subset(ts.abd,ts.abd$microbe == "Phage")
+syn <- subset(ts.abd,ts.abd$microbe == "Syn")
+
+# Phage - model fitting
+model.ar <- lme(log.abd ~ lim * day.fac, random = ~ 1 | cID, 
+                 correlation=corAR1(form = ~ 1 | cID),
+                 data = phage)
+
+model.arma <- lme(log.abd ~ lim * day.fac, random = ~1 | cID,
+                  correlation = corARMA(form = ~1 | cID, p = 1, q = 1),
+                  data = phage)
+
+model.arma1 <- lme(log.abd ~ lim * day.fac, random = ~1 | cID,
+                   correlation = corARMA(form = ~1 | cID, p = 1, q = 2),
+                   data = phage)
+
+mod.comp = anova(model.ar, model.arma, model.arma1)
+
+#xtable(anova.lme(ar1.phage, type = "marginal"))
+#summary(ar1.phage)
+set.caption("RMANOVA table for SRIM8 phage between N-limited vs. P-limited environments. lim: nutrient limitation (nitrogen-limited [NL] or phosphorus-limited [PL]); day.fac: time in the experimental timecourse")
+pander(anova.lme(model.ar, type = "marginal"))
+```
+
+```{r NvP-syn}
+#Syn
+model.ar <- lme(log.abd ~ lim * day.fac, random = ~ 1 | cID, 
+                 correlation=corAR1(form = ~ 1 | cID),
+                 data = syn)
+
+model.arma <- lme(log.abd ~ lim * day.fac, random = ~1 | cID,
+                  correlation = corARMA(form = ~1 | cID, p = 1, q = 1),
+                  data = syn)
+
+model.arma1 <- lme(log.abd ~ lim * day.fac, random = ~1 | cID,
+                   correlation = corARMA(form = ~1 | cID, p = 1, q = 2),
+                   data = syn)
+
+mod.comp = anova(model.ar, model.arma, model.arma1)
+
+#anova.lme(ar1.syn, type = "marginal")
+#summary(ar1.syn)
+set.caption("RMANOVA table for +Ph Synechococcus between N-limited and P-limited environments")
+pander(anova.lme(model.arma, type = "marginal"))
+```
+
+\newpage
+
+```{r TreatmentvControl-NL}
+ts.abd <- cstat.abd %>%
+  filter(microbe == "Syn",
+         lim == "N",
+         day >0) %>%
+  mutate(log.abd = log10(abd),
+         day.fac = as.factor(day)) %>%
+  na.omit()
+
+model.ar <- lme(log.abd ~ day.fac * type, random = ~ 1 | cID, 
+                 correlation=corAR1(form = ~ 1 | cID),
+                 data = ts.abd)
+
+model.arma <- lme(log.abd ~ day.fac * type, random = ~1 | cID,
+                  correlation = corARMA(form = ~1 | cID, p = 1, q = 1),
+                  data = ts.abd)
+
+model.arma1 <- lme(log.abd ~ day.fac * type, random = ~1 | cID,
+                   correlation = corARMA(form = ~1 | cID, p = 1, q = 2),
+                   data = ts.abd)
+
+mod.comp = anova(model.ar, model.arma, model.arma1)
+
+set.caption("RMANOVA table comparison between -Ph and +Ph Synechococcus under N-limitation. day.fac: time in experimental timecourse; type: *Synechococcus* exposure to phage [control, treatment]")
+pander(anova.lme(model.arma1, type = "marginal"))  
+
+```
+
+```{r TreatmentvControl-PL}
+ts.abd <- cstat.abd %>%
+  filter(microbe == "Syn",
+         lim == "P",
+         day >0) %>%
+  mutate(log.abd = log10(abd),
+         day.fac = as.factor(day)) %>%
+  na.omit()
+
+model.ar <- lme(log.abd ~ day.fac * type, random = ~ 1 | cID, 
+                 correlation=corAR1(form = ~1 | cID),
+                 data = ts.abd)
+
+model.arma <- lme(log.abd ~ day.fac * type, random = ~1 | cID,
+                  correlation = corARMA(form = ~1 | cID, p = 1, q = 1),
+                  data = ts.abd)
+
+model.arma1 <- lme(log.abd ~ day.fac * type, random = ~1 | cID,
+                   correlation = corARMA(form = ~1 | cID, p = 1, q = 2),
+                   data = ts.abd)
+
+mod.comp = anova(model.ar, model.arma, model.arma1)
+
+set.caption("RMANOVA table comparison between -Ph and +Ph Synechococcus under P-limitation. day.fac: time in experimental timecourse; type: *Synechococcus* exposure to phage [control, treatment]")
+pander(anova.lme(model.arma, type = "marginal"))  
+
+```
+
+```{r NvP-Controls}
+ts.abd <- cstat.abd %>%
+  filter(microbe == "Syn",
+         type == "Control",
+         day >0) %>%
+  mutate(log.abd = log10(abd),
+         day.fac = as.factor(day)) %>%
+  na.omit()
+
+model.ar <- lme(log.abd ~ day.fac * lim, random = ~ 1 | cID, 
+                 correlation=corAR1(form = ~1 | cID),
+                 data = ts.abd)
+
+model.arma <- lme(log.abd ~ day.fac * lim, random = ~1 | cID,
+                  correlation = corARMA(form = ~1 | cID, p = 1, q = 1),
+                  data = ts.abd)
+
+model.arma1 <- lme(log.abd ~ day.fac * lim, random = ~1 | cID,
+                   correlation = corARMA(form = ~1 | cID, p = 1, q = 2),
+                   data = ts.abd)
+
+mod.comp = anova(model.ar, model.arma, model.arma1)
+
+set.caption("RMANOVA table comparison between N-limited and P-limited control (-Ph) Synechococcus. day.fac: time in experimental timecourse; type: *Synechococcus* exposure to phage [control, treatment]")
+pander(anova.lme(model.ar, type = "marginal"))  
+
+```
+
+\newpage
+
+### Stability (1/CV) and associated tables
+
+```{r}
+
+ts.stab <- function(x){
+  1/(sd(x)/mean(x))
+}
+
+dat = subset(cstat.abd,cstat.abd$day > 0)
+dat$logabd <- log10(dat$abd)
+dat = na.omit(dat)
+
+means = cast(dat, lim + type ~ microbe, mean, value = "abd")
+sems = cast(dat, lim + type ~ microbe, sem, value = "abd")
+ts.stabs = cast(dat, lim + type ~ microbe, ts.stab, value = "logabd")
+
+# create table
+table1 <- data.frame("Limitation" = means[,1], 
+                     "Treatment" = means[,2],
+                     "Synechococcus Mean (SEM)" = paste(prettyNum(means$Syn, digits = 2, format = "e"),"(",prettyNum(sems$Syn, digits = 1, format = "e"),")",sep = ""),
+                     "Syn Stability" = prettyNum(ts.stabs$Syn, format = "e", digits = 2),
+                     "Phage Mean (SEM)" = paste(prettyNum(means$Phage, digits = 2),"(",prettyNum(sems$Phage, digits = 2, format = "e"),")",sep = ""),
+                     "Phage Stability" = prettyNum(ts.stabs$Phage, digits = 2, format = "e"))
+colnames(table1) <- c("Limitation","Treatment","Synechococcus mean densitiy (+/- SEM)","Synechococcus mean stability","Phage mean density (+/- SEM)", "Phage mean stability")
+
+# Creates table by treatment
+pander(table1, split.cells = c(5,10,15,15,15,15),split.tables = Inf, caption = "Average population density and stability by treatment")
+means.cid = cast(dat, cID + type ~ microbe, mean, value = "abd")
+sems.cid = cast(dat, cID + type ~ microbe, sem, value = "abd")
+ts.stabs.cid = cast(dat, cID + type ~ microbe, ts.stab, value = "logabd")
+
+table2 <- data.frame("Limitation" = means.cid[,1], 
+                     "Treatment" = means.cid[,2],
+                     "Synechococcus Mean (SEM)" = paste(prettyNum(means.cid$Syn, digits = 2, format = "e"),"(",prettyNum(sems.cid$Syn, digits = 1, format = "e"),")",sep = ""),
+                     "Syn Stability" = prettyNum(ts.stabs.cid$Syn, format = "e", digits = 2),
+                     "Phage Mean (SEM)" = paste(prettyNum(means.cid$Phage, digits = 2),"(",prettyNum(sems.cid$Phage, digits = 2, format = "e"),")",sep = ""),
+                     "Phage Stability" = prettyNum(ts.stabs.cid$Phage, digits = 2, format = "e"))
+colnames(table2) <- c("Chemostat","Treatment","Synechococcus mean densitiy (+/- SEM)","Synechococcus mean stability","Phage mean density (+/- SEM)", "Phage mean stability")
+pander(table2, split.cells = c(5,10,15,10,15,10),split.tables = Inf, caption = "Average population density and stability by chemostat")
+```
+
+\newpage
+
+### Topolographic statistics and associated tables
+
+```{r ts-mean}
+ts.abd <- subset(cstat.abd,cstat.abd$type == "Infect" & cstat.abd$day > 0)
+ts.abd <- na.omit(ts.abd)
+#Create function for the standard error of the mean. 
+#The density measurements are based on the average of 10 microscope images.
+sem <- function(x){
+  sd(x)/sqrt(3)
+}
+#Calculate basic statistics including mean, variance, sd, sem for each pop
+basic.stats <- matrix(NA, 12, 6)                       #make results storage
+basic.stats <- as.data.frame(basic.stats)
+colnames(basic.stats) <- c("lim","cID","microbe",
+                           "mean","var","sem")
+r <- 0
+for(i in unique(ts.abd$cID)){  
+  for(j in unique(ts.abd$microbe)){
+    #subset data
+    tmp <- ts.abd[ts.abd$microbe == j & ts.abd$cID == i,]
+    r <- r + 1
+    
+    basic.stats[r,1] <- as.character(tmp[1,3])          #Limitation
+    basic.stats[r,2] <- as.character(i)                 #cID
+    basic.stats[r,3] <- as.character(j)                 #microbe
+    
+    basic.stats[r,4] <- mean(tmp[,6])                   #mean
+    basic.stats[r,5] <- var(tmp[,6])                    #variance
+    basic.stats[r,6] <- sem(tmp[,6])                    #SEM
+  }
+}
+basic.stats <- basic.stats[order(basic.stats$microbe),]
+rownames(basic.stats)=NULL
+#pander(basic.stats)
+```
+
+```{r ts-minmax}
+ts.stab <- function(x){
+  1/(sd(x)/mean(x))
+}
+ts.abd <- subset(cstat.abd,cstat.abd$type == "Infect" & cstat.abd$day > 0)
+ts.abd$logabd <- log10(ts.abd$abd)
+ts.abd <- na.omit(ts.abd)
+#Initialize data storage
+results <- matrix(NA,12,10)
+results <- as.data.frame(results)
+colnames(results) <- c("lim", "cID", "microbe", "stab", 
+                       "start.abd","final.abd",
+                       "min.day", "min.abd", "max.day","max.abd")
+#,"dec.rate", "recov.rate", "recov.final")
+r <- 0
+for(i in unique(ts.abd$cID)){  
+  for(j in unique(ts.abd$microbe)){
+    #subset data
+    
+    if(j == "Phage"){
+      tmp <- ts.abd[ts.abd$microbe == j & ts.abd$cID == i,1:7]
+    } else {
+      tmp <- ts.abd[ts.abd$microbe == j & ts.abd$cID == i,1:7]
+    }
+    
+    r <- r + 1 
+    
+    #topology calculations
+    results[r,1] <- as.character(tmp[1,3])    #Limitation
+    results[r,2] <- as.character(i)           #cID
+    results[r,3] <- as.character(j)           #microbe   
+    results[r,4] <- ts.stab(tmp[,7])          #population stability
+    
+    results[r,5] <- tmp[1,6]# starting abundance
+    results[r,6] <- tmp[nrow(tmp),6]# final abundance
+    results[r,7] <- tmp[, 1][tmp[, 6] == min(tmp[, 6])]# minimum day
+    results[r,8] <- min(tmp[, 6])# minimum abd
+    results[r,9] <- tmp[, 1][tmp[, 6] == max(tmp[, 6])]# max day
+    results[r,10] <- max(tmp[, 6])# max abd
+    #results[i,11] <- (tmp[1,6]-min(tmp[, 6]))/(tmp[, 1][tmp[, 6] == min(tmp[, 6])]) # decline rate
+    #results[i,13] <- (Max.abd-Min.abd)/(Max.day-Min.day)# recovery rate
+    #results[i,14] <- (TF-Min.abd)/(TFday-Min.day)# recovery rate final
+    
+  }
+}
+ts.top <- results
+ts.top <- merge(basic.stats,ts.top,id=c("lim","cID","microbe"))
+top.sort <- ts.top[order(ts.top$microbe),]
+rownames(top.sort)=NULL
+#colnames(top.sort)=c("Limitation Treatment", "Chemostat ID","Microbe","Mean Abundance","Variation", )
+#write.csv(top.sort, file = "../../data/pop-dynamics/R/ts-topographic-info.csv",row.names = FALSE)
+set.caption("Descriptive statistical summary of population data.")
+pander(top.sort)
+```
+
+```{r summary-table}
+#subset the data set
+pphage <- subset(top.sort, top.sort$lim == "P" & top.sort$microbe == "Phage")
+nphage <- subset(top.sort, top.sort$lim == "N" & top.sort$microbe == "Phage")
+psyn <- subset(top.sort, top.sort$lim == "P" & top.sort$microbe == "Syn")
+nsyn <- subset(top.sort, top.sort$lim == "N" & top.sort$microbe == "Syn")
+
+#calculate the stats
+syn.mean <- t.test(psyn$mean,nsyn$mean, alternative="two.sided",conf.int = 0.95)
+phage.mean <- t.test(pphage$mean,nphage$mean, alternative="two.sided",conf.int = 0.95)
+
+syn.stab <- t.test(psyn$stab,nsyn$stab, alternative="greater",conf.int = 0.95)
+phage.stab <- t.test(pphage$stab,nphage$stab, alternative="greater",conf.int = 0.95)
+
+#assemble the data
+top.stats <- matrix(NA,4,5)
+top.stats <- data.frame(top.stats)
+colnames(top.stats) <- c("microbe","analysis","t","df","pvalue")
+top.stats[,1] <- c("syn","syn","phage","phage")
+top.stats[,2] <- c("mean","stability","mean","stability")
+top.stats[,3] <- round(c(syn.mean[[1]],syn.stab[[1]],phage.mean[[1]],phage.stab[[1]]), digits = 3)
+top.stats[,4] <- round(c(syn.mean[[2]],syn.stab[[2]],phage.mean[[2]],phage.stab[[2]]),digits = 2)
+top.stats[,5] <- round(c(syn.mean[[3]],syn.stab[[3]],phage.mean[[3]],phage.stab[[3]]), digits = 3)
+
+#top.stats
+set.caption("t-test summary for population mean and stability of +Ph Synechococcus and phage")
+pander(top.stats)
+```
