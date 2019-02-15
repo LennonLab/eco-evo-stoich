@@ -1,0 +1,835 @@
+---
+title: Evolutionary Dynamics
+abstract:
+output: 
+  pdf_document:
+    fig_caption: yes
+    keep_tex: no
+    latex_engine: xelatex
+    number_sections: no
+geometry: margin=1in
+editor_options: 
+  chunk_output_type: console
+---
+  
+```{r setup, include = FALSE}
+#rm(list=ls())
+
+# Load packages and dependencies
+#library(aggregate)
+library(reshape); library(nlme); library(vegan)
+library(igraph); library(bipartite)
+library(plotrix);library(pander)
+library(ggplot2); library(gridExtra)
+library(reshape);library(nlme)
+library(synchrony); library(astsa)
+library(xtable)
+library(lemon); library(tidyverse)
+
+# make function to calculate TEMPORAL infectivity proportions
+infect.prop<-function(x){
+  x <- x[!is.na(x)] # remove NA's
+  length(x[x == 0])/length(x)
+}
+```
+
+```{r global-opts, include = FALSE}
+
+#knitr options
+
+knitr::opts_chunk$set(fig.width=7.5, fig.height=4,
+                      echo=FALSE, warning=FALSE, message=FALSE)
+
+#ggplot options
+
+```
+
+<Initial Data Reduction from infection matrix>
+
+```{r convert-matrix}
+# Read in the Breadth of Resistance Data
+bor <- read.csv("./data/inf-mat.csv", header = F)
+
+# prevent factors
+dat <- apply(bor, 2, function(x) as.character(x))
+
+
+##Clean up data for analysis
+#keep columns of data that have less than 50% NA
+dat1 <- dat[, colSums(is.na(dat)) < length(dat[8:nrow(dat),1]) * 0.50]
+
+# need to remove columns that are all zeros. suggests that cells did not grow
+
+
+dat2 <- dat1
+
+#process matrix
+#remove bacteria information 
+res2 <- dat2[8:dim(dat2)[[1]],]
+
+nms <- dat2[7,1:7]
+nms <- t(lapply(nms,function(x) {paste("P.",gsub(" ",".",x),sep="")}))
+colnames(res2)[1:7] <- nms
+
+res3 <- as.data.frame(res2)
+#head(res3)
+
+m1 <- melt(res3,id=1:7)
+m1$variable <- as.character(m1$variable)
+#head(m1)
+
+# now grab column variables
+res2b <- t(dat2[1:7,7:dim(dat2)[[2]]])
+nmsb <- dat2[1:7,7]
+nmsb <- t(lapply(nmsb,function(x) {paste("B.",gsub(" ",".",x),sep="")}))
+colnames(res2b) <- nmsb
+vars <- rownames(res2b)
+res2b <- cbind(res2b,variable=vars)
+
+#combine covariates
+res4 <- merge(m1,res2b,by=c("variable"),all.x=T)
+
+# move value column
+res4 <- cbind(res4[,-which(colnames(res4)=="value")],infectivity=res4$value)
+
+# drop the now unnecessary variable column
+res4 <- res4[,-1]
+
+# ensure that infectivity is numeric
+res4$infectivity <- as.numeric(as.character(res4$infectivity))
+
+# clean up labels for factors, example:
+#levels(res4$P.cID)
+
+# note that there shouldn't be two different versions of N2, 
+#but some of them are followed by an extra space.
+
+# this turns P.cID into character data, 
+# finds space characters and removes them, overwriting P.cID in res4
+res4$P.cID <- gsub(" ","",as.character(res4$P.cID))
+
+# also happens in B.Time.point
+res4$B.tm.pt <- gsub(" ","",as.character(res4$B.tm.pt))
+
+# create matrix of infectivity proportions
+# by looking at a specific nutrient treatment, for example.
+#head(res4)
+
+#This file includes control data too
+#write.csv(res4, file = "./data/inf-mat-processed.csv", row.names = F)
+```
+
+<Data Reduction - using processed data file>
+
+```{r dof-function}
+# Use processed datafile for remaining analyses
+res4 <- read.csv("./data/inf-mat-processed.csv", header = T)
+
+```
+
+```{r NL_controls_dof}
+#Initialize data storage
+lim.list <- c(); cid.list <- c(); phage.time <- c(); bac.time <- c(); inf.prob <- c();b.cid.list <- c()
+
+r = 1
+l = 0
+
+#Remove the ancestral phage data 
+res4 <- subset(res4,P.cID !="RIM8-1")
+res4 <- subset(res4,B.cID !="WH7803")
+res4 <- subset(res4,B.cID !="WH8101")
+
+# Subsetting by phage chemostat ID
+cID = c("N2","N3","N5")
+
+for(i in cID){
+  r <- r + l
+  res4b <- subset(res4,(P.cID == i | is.na(P.cID)) & (B.lim == "N" & B.trt == "C" | is.na(B.cID)))
+  
+  # pull out the relevant columns after subsetting as needed.
+  res5 <- res4b[,c("P.daynumber","B.daynumber","infectivity")]
+  
+  # prevent factors; coerce to numeric
+  res5 <- as.data.frame(apply(res5,2,function(x) as.numeric(as.character(x))))
+  
+  m2 <- melt(res5,id=c("P.daynumber","B.daynumber"))
+  c2 <- cast(m2,P.daynumber~B.daynumber,fun.aggregate = infect.prop)
+  c3 <- c2
+  
+  
+  rownames(c2) <- c2$P.daynumber
+  c2 <- c2[,-1]
+  
+  #write.csv(c2, file = paste("./data/evo-dynamics/20150710_infmatrix",i,"Ncontrol",".csv",sep = ""), row.names = T)
+  
+  m3 <- melt(c3,id=c("P.daynumber","B.daynumber"))
+  l <- r + length(m3[,1])
+  
+  cid.list <- append(cid.list,rep(as.character(i),length(m3[,1])))
+  b.cid.list <- append(b.cid.list,rep(as.character(unique(res4b$B.cID)),length(m3[,1])))
+  phage.time <- append(phage.time,m3$P.daynumber)
+  bac.time <- append(bac.time,m3$B.daynumber)
+  inf.prob <- append(inf.prob, m3$value)
+  
+}
+
+
+bor.cstat.Ncontrol <- data.frame(b.cid.list,cid.list,phage.time,bac.time,inf.prob)
+```
+
+```{r NL_coevo_dof}
+#Initialize data storage
+lim.list <- c(); cid.list <- c(); phage.time <- c(); bac.time <- c(); inf.prob <- c();b.cid.list <- c()
+
+r = 1
+l = 0
+
+#Remove the ancestral phage data 
+res4 <- subset(res4,P.cID !="RIM8-1")
+res4 <- subset(res4,B.cID !="WH7803")
+res4 <- subset(res4,B.cID !="WH8101")
+
+cID = c("N2","N3","N5")
+
+for(i in cID){
+  r <- r + l
+  res4b <- subset(res4,(P.cID == i | is.na(P.cID)) & (B.lim == "N" & B.trt == "T" | is.na(B.cID)))
+  
+  # pull out the relevant columns after subsetting as needed.
+  res5 <- res4b[,c("P.daynumber","B.daynumber","infectivity")]
+  
+  # prevent factors; coerce to numeric
+  res5 <- as.data.frame(apply(res5,2,function(x) as.numeric(as.character(x))))
+  
+  m2 <- melt(res5,id=c("P.daynumber","B.daynumber"))
+  c2 <- cast(m2,P.daynumber~B.daynumber,fun.aggregate = infect.prop)
+  c3 <- c2
+  
+  
+  rownames(c2) <- c2$P.daynumber
+  c2 <- c2[,-1]
+  
+  #write.csv(c2, file = paste("./data/evo-dynamics/20150710_infmatrix",i,"Ncoevo",".csv",sep = ""), row.names = T)
+  m3 <- melt(c3,id=c("P.daynumber","B.daynumber"))
+  l <- r + length(m3[,1])
+  
+  cid.list <- append(cid.list,rep(as.character(i),length(m3[,1])))
+  b.cid.list <- append(b.cid.list,rep(as.character(unique(res4b$B.cID)),length(m3[,1])))
+  phage.time <- append(phage.time,m3$P.daynumber)
+  bac.time <- append(bac.time,m3$B.daynumber)
+  inf.prob <- append(inf.prob, m3$value)
+  
+}
+
+bor.cstat.Ncoevo <- data.frame(b.cid.list, cid.list,phage.time,bac.time,inf.prob)
+
+```
+
+```{r PL_control_dof}
+#Initialize data storage
+lim.list <- c(); cid.list <- c(); phage.time <- c(); bac.time <- c(); inf.prob <- c();b.cid.list <- c()
+
+r = 1
+l = 0
+
+#Remove the ancestral phage data 
+res4 <- subset(res4,P.cID !="RIM8-1")
+res4 <- subset(res4,B.cID !="WH7803")
+res4 <- subset(res4,B.cID !="WH8101")
+
+cID = c("P2","P4","P5")
+
+for(i in cID){
+  r <- r + l
+  res4b <- subset(res4,(P.cID == i | is.na(P.cID)) & (B.lim == "P" & B.trt == "C" | is.na(B.cID)))
+  
+  # pull out the relevant columns after subsetting as needed.
+  res5 <- res4b[,c("P.daynumber","B.daynumber","infectivity")]
+  
+  # prevent factors; coerce to numeric
+  res5 <- as.data.frame(apply(res5,2,function(x) as.numeric(as.character(x))))
+  
+  m2 <- melt(res5,id=c("P.daynumber","B.daynumber"))
+  c2 <- cast(m2,P.daynumber~B.daynumber,fun.aggregate = infect.prop)
+  c3 <- c2
+  
+  
+  rownames(c2) <- c2$P.daynumber
+  c2 <- c2[,-1]
+  
+  # write.csv(c2, file = paste("./data/evo-dynamics/20150710_infmatrix",i,"Pcontrol",".csv",sep = ""), row.names = T)
+  
+  m3 <- melt(c3,id=c("P.daynumber","B.daynumber"))
+  l <- r + length(m3[,1])
+  
+  cid.list <- append(cid.list,rep(as.character(i),length(m3[,1])))
+  b.cid.list <- append(b.cid.list,rep(as.character(unique(res4b$B.cID)),length(m3[,1])))
+  phage.time <- append(phage.time,m3$P.daynumber)
+  bac.time <- append(bac.time,m3$B.daynumber)
+  inf.prob <- append(inf.prob, m3$value)
+  
+}
+
+
+bor.cstat.Pcontrol <- data.frame(b.cid.list, cid.list,phage.time,bac.time,inf.prob)
+```
+
+```{r PL_coevo_dof}
+#Initialize data storage
+lim.list <- c(); cid.list <- c(); phage.time <- c(); bac.time <- c(); inf.prob <- c();b.cid.list <- c()
+
+r = 1
+l = 0
+
+#Remove the ancestral phage data 
+res4 <- subset(res4,P.cID !="RIM8-1")
+res4 <- subset(res4,B.cID !="WH7803")
+res4 <- subset(res4,B.cID !="WH8101")
+
+cID = c("P2","P4","P5")
+
+for(i in cID){
+  r <- r + l
+  res4b <- subset(res4,(P.cID == i | is.na(P.cID)) & (B.lim == "P" & B.trt == "T" | is.na(B.cID)))
+  
+  # pull out the relevant columns after subsetting as needed.
+  res5 <- res4b[,c("P.daynumber","B.daynumber","infectivity")]
+  
+  # prevent factors; coerce to numeric
+  res5 <- as.data.frame(apply(res5,2,function(x) as.numeric(as.character(x))))
+  
+  m2 <- melt(res5,id=c("P.daynumber","B.daynumber"))
+  c2 <- cast(m2,P.daynumber~B.daynumber,fun.aggregate = infect.prop)
+  c3 <- c2
+  
+  
+  rownames(c2) <- c2$P.daynumber
+  c2 <- c2[,-1]
+  
+  #write.csv(c2, file = paste("./data/evo-dynamics/20150710_infmatrix",i,"Pcoevo",".csv",sep = ""), row.names = T)
+  m3 <- melt(c3,id=c("P.daynumber","B.daynumber"))
+  l <- r + length(m3[,1])
+  
+  cid.list <- append(cid.list,rep(as.character(i),length(m3[,1])))
+  b.cid.list <- append(b.cid.list,rep(as.character(unique(res4b$B.cID)),length(m3[,1])))
+  phage.time <- append(phage.time,m3$P.daynumber)
+  bac.time <- append(bac.time,m3$B.daynumber)
+  inf.prob <- append(inf.prob, m3$value)
+  
+}
+
+bor.cstat.Pcoevo <- data.frame(b.cid.list, cid.list,phage.time,bac.time,inf.prob)
+
+```
+
+```{r merge-dof-data}
+#bor.cstat.Ncontrol
+bor.cstat.Ncontrol$trt <- rep("C", length(bor.cstat.Ncontrol[,1]))
+bor.cstat.Ncontrol$lim <- rep("N", length(bor.cstat.Ncontrol[,1]))
+
+#bor.cstat.Ncoevo
+bor.cstat.Ncoevo$trt  <- rep("T", length(bor.cstat.Ncoevo[,1]))
+bor.cstat.Ncoevo$lim <- rep("N", length(bor.cstat.Ncoevo[,1]))
+
+#bor.cstat.Pcontrol
+bor.cstat.Pcontrol$trt  <- rep("C", length(bor.cstat.Pcontrol[,1]))
+bor.cstat.Pcontrol$lim <- rep("P", length(bor.cstat.Pcontrol[,1]))
+
+#bor.cstat.Pcoevo
+bor.cstat.Pcoevo$trt <- rep("T", length(bor.cstat.Pcoevo[,1]))
+bor.cstat.Pcoevo$lim <- rep("P", length(bor.cstat.Pcoevo[,1]))
+
+bor.cstat <- rbind(bor.cstat.Ncontrol, bor.cstat.Ncoevo, bor.cstat.Pcontrol, bor.cstat.Pcoevo)
+colnames(bor.cstat) <- c("BcID","cID","phage.time","bac.time","inf.prob","trt","lim")
+
+```
+
+# Figure 2: global infectivity and resistance
+
+```{r resistance-fig}
+# calculate mean resistance for each chemostat, then for the treatment level
+resistance <- bor.cstat.Ncoevo %>% 
+  bind_rows(bor.cstat.Pcoevo) %>% 
+  mutate_if(is.character, as.factor) %>%
+  mutate(inf.prob.inv = 1- inf.prob) %>%
+  group_by(b.cid.list, bac.time) %>%
+  mutate(mean.cid.inf.prob = mean(inf.prob.inv)) %>%
+  group_by(lim, bac.time) %>%
+  summarize(mean.inf.prob = mean(mean.cid.inf.prob),
+            sd.inf.prob = sd(mean.cid.inf.prob)/sqrt(3))
+
+p <- ggplot(resistance, aes(x = bac.time, y = mean.inf.prob, 
+                       col = lim, shape = lim)) +
+  geom_vline(xintercept = 0, col = "grey40") +
+  geom_errorbar(aes(ymin = mean.inf.prob - sd.inf.prob,
+                    ymax = mean.inf.prob + sd.inf.prob), 
+                width = 0.1) +
+  geom_point(size = 3) + 
+  scale_colour_grey("Limitation") + 
+  scale_shape_discrete("Limitation") +
+  lims(x = c(-6,170), y = c(0,1)) +
+  theme_bw() + theme(panel.grid = element_blank()) +
+  labs(x = "Time (d)", y = "Resistance\n")
+
+
+
+```
+
+```{r infectivity-fig}
+infectivity <- bor.cstat.Ncoevo %>% 
+  bind_rows(bor.cstat.Pcoevo) %>% 
+  mutate_if(is.character, as.factor) %>%
+  group_by(cid.list, phage.time) %>%
+  mutate(mean.cid.inf.prob = mean(inf.prob)) %>%
+  group_by(lim, phage.time) %>%
+  summarize(mean.inf.prob = mean(mean.cid.inf.prob),
+            sd.inf.prob = sd(mean.cid.inf.prob)/sqrt(3))
+
+inf.p <- ggplot(infectivity, aes(x = phage.time, y = mean.inf.prob, 
+                       col = lim, shape = lim)) +
+    geom_vline(xintercept = 0, col = "grey40") +
+  geom_errorbar(aes(ymin = mean.inf.prob - sd.inf.prob,
+                    ymax = mean.inf.prob + sd.inf.prob), 
+                width = 0.1) +
+  geom_point(size = 3) + 
+  scale_colour_grey("Limitation") + 
+  scale_shape_discrete("Limitation") +
+  lims(x = c(-6,170), y = c(0,0.3)) +
+  theme_bw() + theme(panel.grid = element_blank()) +
+  labs(x = "Time (d)", y = "Infectivity\n", font = "bold")
+
+```
+
+```{r fig2, fig.cap=""}
+grid_arrange_shared_legend(p, inf.p ,ncol = 2)
+
+# ggsave(grid_arrange_shared_legend(p, inf.p ,ncol = 2),
+#        filename = "./supporting-files/Figure2.tiff",
+#        device = "tiff", dpi = 300, width = 6, height = 3, units = "in",
+#        scale = 1.1)
+```
+
+```{r RMANOVA-inf-res}
+# resistance
+res.dat <- bor.cstat.Ncoevo %>% 
+  bind_rows(bor.cstat.Pcoevo) %>% 
+  mutate_if(is.character, as.factor) %>%
+  mutate(inf.prob.inv = 1- inf.prob)
+
+#ggplot(data = res.dat, aes(x = bac.time, y = inf.prob.inv, col = lim)) + geom_point()
+
+model.ar <- lme(inf.prob.inv ~ lim * bac.time, 
+                random = ~1 | b.cid.list,
+                correlation = corAR1(form = ~ 1 | b.cid.list),
+                data = res.dat)
+
+#summary(model.ar)
+pander(anova.lme(model.ar, type = "marginal"), caption = "Resistance RMANOVA results")
+
+# infectivity
+
+inf.dat <- bor.cstat.Ncoevo %>% 
+  bind_rows(bor.cstat.Pcoevo) %>% 
+  mutate_if(is.character, as.factor) 
+  
+model.ar <- lme(inf.prob ~ lim * phage.time, 
+                random = ~1 | cid.list,
+                correlation = corAR1(form = ~ 1 | cid.list),
+                data = inf.dat)
+
+#summary(model.ar)
+pander(anova.lme(model.ar, type = "marginal"), caption = "Infectivity RMANOVA results")
+```
+
+
+\newpage
+
+# Figure 3: Co-evolutionary dynamics
+
+```{r con+coevo-dataImport}
+Ncon <- read.csv("./data/20150710-infmatrixNcontrols.csv", header = F)
+Ncon[1,1] <- 999
+Ncon[,1] <- as.numeric(as.character(Ncon[,1]))
+Ncon <- as.matrix(Ncon)
+
+Ntrt <- read.csv("./data/20150710-infmatrixNcoevo.csv", header = F)
+Ntrt[1,1] <- 999
+Ntrt[,1] <- as.numeric(as.character(Ntrt[,1]))
+Ntrt <- as.matrix(Ntrt)
+
+Pcon <- read.csv("./data/20150710-infmatrixPcontrols.csv", header = F)
+Pcon[1,1] <- 999
+Pcon[,1] <- as.numeric(as.character(Pcon[,1]))
+Pcon <- as.matrix(Pcon)
+
+Ptrt <- read.csv("./data/20150710-infmatrixPcoevo.csv", header = F)
+Ptrt[1,1] <- 999
+Ptrt[,1] <- as.numeric(as.character(Ptrt[,1]))
+Ptrt <- as.matrix(Ptrt)
+
+#Ncon;Ntrt
+#Pcon;Ptrt
+
+#Add column to Ncon for 166; data does not exist for this time point
+V8 <- c(166,NA,NA,NA,NA,NA)
+Ncon <- cbind(Ncon,V8)
+
+
+# save timings
+phage.time <- as.numeric(c(Ncon[2:nrow(Ncon),1]))
+#phage.time <- as.numeric(c(Ncon[2:nrow(Ncon),1],Ntrt[2:nrow(Ntrt),1]))
+bacteria.time <- as.numeric(c(Ncon[1,2:ncol(Ncon)],Ntrt[1,2:ncol(Ntrt)]))
+
+#Trim data to remove column and row labels
+Ncon <- Ncon[2:dim(Ncon)[[1]], 2:(dim(Ncon))[[2]]]
+Pcon <- Pcon[2:dim(Pcon)[[1]], 2:(dim(Pcon))[[2]]]
+Ntrt <- Ntrt[2:dim(Ntrt)[[1]], 2:(dim(Ntrt))[[2]]]
+Ptrt <- Ptrt[2:dim(Ptrt)[[1]], 2:(dim(Ptrt))[[2]]]
+
+
+```
+
+```{r figure}
+# tiff(filename = "./supporting-files/Figure3-CoEvoDynamics.tiff",
+#     width = 1140, height = 570, units = "px", pointsize = 13,
+#     bg = "white", res = 100)
+
+par(mfrow = c(1,2))
+par(mar = c(4,6,3,1)+0.1)
+
+#Option 2
+# construct and populate adjacency matrix
+size <- 1*dim(Ncon)[[1]]+2*dim(Ntrt)[[2]]
+mat <- matrix(0,nrow = size,ncol = size)
+#mat
+
+# for multiple bacteria, single phage 
+mat[1:dim(Ncon)[[1]],I(dim(Ncon)[[1]]+1):I(dim(Ncon)[[1]]+dim(Ncon)[[2]])] <-as.matrix(Ntrt)
+mat[1:dim(Ncon)[[1]],I(dim(Ncon)[[1]]+dim(Ncon)[[2]]+1):dim(mat)[[2]]] <- as.matrix(Ncon)
+
+# convert adjacency matrix into graph object
+g2 <- graph.adjacency(mat,mode="directed",weighted=T)
+
+# extract weights
+#wts <- g2[[9]][[4]]$weight
+wts <- E(g2)$weight
+
+# create layout matrix
+locs <- cbind(c(phage.time,bacteria.time),c(rep(0,length(phage.time)),rep(-1,length(bacteria.time)/2),rep(1,length(bacteria.time)/2)))
+
+#plot options
+phage.color = "black"; bac.color = "white"; bac.color2 = "grey"
+#coevo.shape = "circle"; control.shape = "square"
+
+
+# create plot
+plot(g2,
+     #vertex.size = sq.dim,
+     #vertex.label.color = "black",
+     vertex.label = NA,
+     vertex.shape = c(rep("square",length(phage.time)),
+                      rep("circle",length(bacteria.time)/2),
+                      rep("circle",length(bacteria.time)/2)),
+     vertex.color = c(rep(phage.color,length(phage.time)),
+                      rep(bac.color,length(bacteria.time)/2),
+                      rep(bac.color2,length(bacteria.time)/2)),
+     vertex.frame.color = c(rep("black",length(phage.time)),
+                            rep("black",length(bacteria.time)/2),
+                            rep("black",length(bacteria.time)/2)),
+     edge.color = "grey20",edge.width = 5*wts,
+     edge.arrow.mode = 0,layout = locs,
+     main = "N-limited",
+     xlab = list("Time (d)", cex = 1.25, font = 2),asp = 0, ylim = c(-1.2,1))
+
+# draw scaled axes
+xs <- c(0,40,80, 120, 160)
+scaled.xs <- 2*(xs - min(locs[,1]))/(max(locs[,1]) - min(locs[,1])) - 1
+
+axis(1,at = scaled.xs,labels = xs, cex = 1.15)
+axis(2, at = c(-1,0,1),labels = c("host \n(+ phage)","phage","host \n(- phage)"),cex.axis = 1,font = 1, las = 1)
+
+box(lwd = 2)
+
+
+### PL treatment
+
+par(mar = c(4,1,3,6)+0.1)
+
+# construct and populate adjacency matrix
+size <- 1*dim(Pcon)[[1]] + 2*dim(Ptrt)[[2]]
+mat <- matrix(0, nrow = size, ncol = size)
+#mat
+
+# for multiple bacteria, single phage 
+mat[1:dim(Pcon)[[1]],I(dim(Pcon)[[1]]+1):I(dim(Pcon)[[1]] + dim(Pcon)[[2]])] <- as.matrix(Ptrt)
+mat[1:dim(Pcon)[[1]],I(dim(Pcon)[[1]]+dim(Pcon)[[2]]+1):dim(mat)[[2]]] <- as.matrix(Pcon)
+
+# convert adjacency matrix into graph object
+g2 <- graph.adjacency(mat,mode="directed",weighted=T)
+
+# extract weights
+#wts <- g2[[9]][[4]]$weight
+wts <- E(g2)$weight
+
+# create layout matrix
+locs <- cbind(c(phage.time,bacteria.time),c(rep(0,length(phage.time)),rep(-1,length(bacteria.time)/2),rep(1,length(bacteria.time)/2)))
+
+#plot options
+phage.color = "black"; bac.color = "white"; bac.color2 = "grey"
+coevo.shape = "circle"; control.shape = "square"
+
+# create plot
+plot(g2,
+     #vertex.size = sq.dim,
+     #vertex.label.color = "black",
+     vertex.label = NA,
+     vertex.shape = c(rep("square",length(phage.time)),
+                      rep("circle",length(bacteria.time)/2),
+                      rep("circle",length(bacteria.time)/2)),
+     vertex.color = c(rep(phage.color,length(phage.time)),
+                      rep(bac.color,length(bacteria.time)/2),
+                      rep(bac.color2,length(bacteria.time)/2)),
+     vertex.frame.color = c(rep("black",length(phage.time)),
+                            rep("black",length(bacteria.time)/2),
+                            rep("black",length(bacteria.time)/2)),
+     edge.color = "grey20",edge.width = 5*wts,
+     edge.arrow.mode = 0,layout = locs,
+     main = "P-limited",
+     xlab = list("Time (d)", cex = 1.25, font = 2),
+     asp = 0,ylim = c(-1.2,1))
+
+# draw scaled axes
+xs <- c(0,40,80, 120, 160)
+scaled.xs <- 2*(xs - min(locs[,1]))/(max(locs[,1]) - min(locs[,1])) - 1
+
+axis(1,at = scaled.xs,labels = xs, cex = 1)
+axis(4, at = c(-1,0,1),labels = c("host \n(+ phage)","phage","host \n(- phage)"),cex.axis = 1,font = 1, las = 1)
+
+box(lwd = 2)
+
+#dev.off()
+```
+
+
+## RMANOVA for Interaction Strengths
+
+```{r dof-stats}
+#str(bor.cstat)
+bor.stat <- bor.cstat
+#bor.stat$phage.time <- as.factor(bor.stat$phage.time)
+#bor.stat$bac.time <- as.factor(bor.stat$bac.time)
+
+bor.stat$trt <- as.factor(bor.stat$trt)
+bor.stat$lim <- as.factor(bor.stat$lim)
+
+```
+
+```{r RMANOVA_N-v-P-control}
+#control hosts
+model.ar <- lme(inf.prob ~ lim * phage.time * bac.time, random = ~1 | cID,
+                correlation = corAR1(form = ~1 | cID),
+                data = bor.stat[bor.stat$trt == "C",])
+
+model.arma1 <- lme(inf.prob ~ lim * phage.time * bac.time, random = ~1 | cID,
+                   correlation = corARMA(form = ~1 | cID, p = 1, q = 1),
+                   data = bor.stat[bor.stat$trt == "C",])
+
+model.arma2 <- lme(inf.prob ~ lim * phage.time * bac.time, random = ~1 | cID,
+                   correlation = corARMA(form = ~1 | cID, p = 1, q = 2),
+                   data = bor.stat[bor.stat$trt == "C",])
+mod.comp = anova(model.ar, model.arma1, model.arma2)
+#arma2
+
+pander(anova.lme(model.arma2, type = "marginal"), caption = "RMANOVA results for interaction strengths between phage and control hosts")
+```
+
+```{r RMANOVA_N-v-P-treatment}
+# treatment hosts - model fitting
+model.ar <- lme(inf.prob ~ lim * phage.time * bac.time, random = ~1 | cID,
+                correlation = corAR1(form = ~1 | cID),
+                data = bor.stat[bor.stat$trt == "T",])
+
+model.arma1 <- lme(inf.prob ~ lim * phage.time * bac.time, random = ~1 | cID,
+                   correlation = corARMA(form = ~1 | cID, p = 1, q = 1),
+                   data = bor.stat[bor.stat$trt == "T",])
+
+model.arma2 <- lme(inf.prob ~ lim * phage.time * bac.time, random = ~1 | cID,
+                   correlation = corARMA(form = ~1 | cID, p = 1, q = 2),
+                   data = bor.stat[bor.stat$trt == "T",])
+mod.comp = anova(model.ar, model.arma1, model.arma2)
+#anova(model.ar)
+pander(anova.lme(model.arma1, type = "marginal"), caption = "RMANOVA results for interaction strengths between phage and treatment hosts")
+```
+
+
+
+```{r dof-stats1,}
+model.ar <- lme(inf.prob ~ trt* lim * phage.time * bac.time, random = ~1 | cID,
+                correlation = corAR1(form = ~1 | cID),
+                data = bor.stat)
+
+model.arma1 <- lme(inf.prob ~ trt* lim * phage.time * bac.time, random = ~1 | cID,
+                   correlation = corARMA(form = ~1 | cID, p = 1, q = 1),
+                   data = bor.stat)
+
+model.arma2 <- lme(inf.prob ~ trt* lim * phage.time * bac.time, random = ~1 | cID,
+                   correlation = corARMA(form = ~1 | cID, p = 1, q = 2),
+                   data = bor.stat)
+mod.comp = anova(model.ar, model.arma1, model.arma2)
+
+sum.mod.arma2=summary(model.arma2)
+#anova(model.arma2)
+
+stats = anova.lme(model.arma2,type = "marginal", adjustSigma = F)
+#write.csv(file = "./supporting-files/chpt-tables/SOI-RMANOVA.csv", stats, row.names = FALSE)
+pander(mod.comp[,c(-1,-2,-3,-7)])
+
+captext = paste0("*Model covariate comparison for full RMANOVA with treatment (trt), time of phage isolation (phage.time), tine of bacterial isolation (bac.time, and nutrient limitation (lim).*")
+emphasize.strong.rows(which(sum.mod.arma2$tTable[,5] < 0.05, arr.ind = TRUE))
+pander(sum.mod.arma2$tTable[,c(2,4,5)], justify = "left")
+
+```
+
+\newpage
+
+
+# Fig 4: Evolutionary Time-shifts
+
+```{r calculations}
+
+## This calculation is modified from Gaba et al
+bor.cstat$ptime.adj <- bor.cstat$phage.time
+bor.cstat$btime.adj <- bor.cstat$bac.time
+
+bor.cstat$btime.adj[bor.cstat$btime.adj == -6] <- 1
+bor.cstat$btime.adj[bor.cstat$btime.adj == 9] <- 2
+bor.cstat$btime.adj[bor.cstat$btime.adj == 23] <- 3
+bor.cstat$btime.adj[bor.cstat$btime.adj == 72] <- 4
+bor.cstat$btime.adj[bor.cstat$btime.adj == 100] <- 5
+bor.cstat$btime.adj[bor.cstat$btime.adj == 129] <- 6
+bor.cstat$btime.adj[bor.cstat$btime.adj == 166] <- 7
+bor.cstat$ptime.adj[bor.cstat$ptime.adj == 9] <- 2
+bor.cstat$ptime.adj[bor.cstat$ptime.adj == 23] <- 3
+bor.cstat$ptime.adj[bor.cstat$ptime.adj == 72] <- 4
+bor.cstat$ptime.adj[bor.cstat$ptime.adj == 129] <- 6
+bor.cstat$ptime.adj[bor.cstat$ptime.adj == 166] <- 7
+
+bor.cstat$time.shift <- bor.cstat$phage.time-bor.cstat$bac.time
+bor.cstat$bac.time.fac <- as.factor(bor.cstat$bac.time)
+bor.cstat$p.time.shift <- bor.cstat$btime.adj-bor.cstat$ptime.adj
+bor.cstat$phage.time.fac <- as.factor(bor.cstat$phage.time)
+```
+
+```{r timeshift-figure}
+# Time shift by time point
+p <- ggplot(bor.cstat, aes(x = time.shift, y = inf.prob, lty = bac.time.fac)) +
+  geom_vline(xintercept = 0, lty = 1, lwd =0.5,col = "grey50")+
+  stat_summary(fun.y = mean,geom="line", lwd = 1.)+
+  facet_grid(trt~lim)+
+  xlab("Time Shift (days) relative to host\n") +
+  ylab("Interaction Strength\n") +
+  scale_y_continuous(limits = c(0,1.25), 
+                     breaks = c(0,.25,.5,.75,1), 
+                     labels = c("0.0","0.25","0.50","0.75","1.00"))+
+  theme_bw()+
+  theme(legend.position='none',
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        panel.border = element_rect(colour = "black"),
+        axis.text  = element_text(size=rel(1.25)),
+        axis.title = element_text(colour="black", size=rel(1.5),
+                                  margin = margin(20,25,15,15), face = "bold"),
+        strip.text = element_text(size = rel(1.15), colour = "black", face = "bold"))
+
+p$data$trt <- factor(p$data$trt, levels=c("T","C"))
+
+print(p)
+
+# ggsave("./supporting-files/Figure4-time_shift.tiff", p, device = "tiff",
+#       scale = 1.5, width = 6, height = 4, units = "in", dpi = 300)
+
+```
+
+
+## Time-shift statistics
+
+```{r}
+
+#bor.cstat$time.shift <- as.factor(bor.cstat$time.shift)
+
+bor.cstat$lim <- as.factor(bor.cstat$lim)
+bor.cstat$trt <- as.factor(bor.cstat$trt)
+
+#Run RMANOVA with different models
+model.ar <- lme(inf.prob ~ trt * lim * time.shift, random = ~1 | BcID,
+                correlation = corAR1(form = ~1 ),
+                data = bor.cstat)
+
+model.arma <- lme(inf.prob ~ trt* lim * time.shift,random = ~1 | BcID,
+                  correlation = corARMA(form = ~1, p = 1, q = 1),
+                  data = bor.cstat)
+
+model.arma1 <- lme(inf.prob ~ trt* lim * time.shift, random = ~1 | BcID,
+                   correlation = corARMA(form = ~1, p = 1, q = 2),
+                   data = bor.cstat)
+
+mod.comp = anova(model.ar, model.arma, model.arma1)
+
+sum.mod.arma1=summary(model.arma1)
+#anova(model.arma2)
+
+stats = anova.lme(model.arma1,type = "sequential", adjustSigma = F)
+#write.csv(file = "./supporting-files/chpt-tables/SOI-RMANOVA.csv", stats, row.names = FALSE)
+#pander(mod.comp[,c(-1,-2,-3,-7)])
+
+#captext = paste0("*Model covariate comparison for RMANOVA.*")
+emphasize.strong.rows(which(sum.mod.arma1$tTable[,5] < 0.05, arr.ind = TRUE))
+pander(sum.mod.arma1$tTable[,c(2,4,5)], justify = "left", caption = "RMANOVA results for time shifts (Figure 4).")
+
+
+```
+
+
+\newpage
+
+
+```{r, include = FALSE, eval = FALSE}
+#Using data that includes the control hosts
+
+#double check this information... need to have phage infectivity from each chemostat against every bacterium...
+#This file is created in section 2.2.2
+#bor.cstat = "./output/"
+
+bor.stat <- bor.cstat.trt
+bor.stat$phage.time <- as.factor(bor.stat$phage.time)
+bor.stat$bac.time <- as.factor(bor.stat$bac.time)
+bor.stat$trt <- as.factor(bor.stat$trt)
+bor.stat$lim <- as.factor(bor.stat$lim)
+
+#Run RMANOVA with different models
+model.ar <- lme(inf.prob ~ trt * lim* phage.time * bac.time, random = ~1,
+                correlation = corAR1(form = ~1 ),
+                data = bor.stat)
+
+model.arma <- lme(inf.prob ~ trt* lim * phage.time * bac.time,random = ~1,
+                  correlation = corARMA(form = ~1, p = 1, q = 1),
+                  data = bor.stat)
+
+model.arma1 <- lme(inf.prob ~ trt* lim * phage.time * bac.time, random = ~1,
+                   correlation = corARMA(form = ~1, p = 1, q = 2),
+                   data = bor.stat)
+
+#Select which model fits the data better
+anova(model.ar,model.arma, model.arma1)
+
+#summary(model.arma1)
+#anova(model.arma1)
+set.caption("RMANOVA table for infection data")
+pander(model.arma1)
+#phage.time*lim; p = 0.001
+#phage.time*bac.time; p = 0.0029
+#lim*phage.time*bac.time; p = 0.0085
+```
+
+
