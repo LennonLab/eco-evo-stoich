@@ -15,6 +15,8 @@ This repository contains open-source code, data, and text files for the eco-evo-
 
 `cstat-means`: *Synechococcus* and phage population counts as matrix with calculated standard error of the mean for each population. This file was used for the production of Figure 1 and Figure S2.
 
+`ccf-dataset-sas-abundances`: modification of cid-means used for the SAS CCF analysis. Measurements are labeled sequentially with a sample number that corresponds to the chemostat time (time) and the population abundance of Synechococcus or phage in each of the replicate chemostats (N-limited Synechococcus = BNL2, BNL3, BNL5; N-limited phage = PNL2, PNL3, PNL5, P-limited Synechococcus = BPL2, BPL4, BPL5; P-limited phage = PPL2, PPL4, PPL5).
+
 **Evolutionary dynamics (evo-dynamics)**
 `inf-mat`: binary infection data (0 = infection/lack of *Synechococcus* growth, 1 = no infection/*Synechococcus* growth) collected for each *Synechococcus* strain (columns) and phage strain (rows) challenge. Strain information including the treatment (trt; C = Control, T = Treatment), nutrient limitation (lim; N = nitrogen-limited, P = phosphorus-limited), the unique chemostat identifier (cID; Ni = nitrogen-limited replicate, Pi = phosphorus-limited replicate), the isolation day in the timecourse (daynumber), the series time point (tm.pt), and isolate number (iso). Each strain was assigned a unique strain identifier using the series time point, cID, and isolate number. NAs correspond to challenges with conflicting results in the triplicate analysis.  
 
